@@ -10,6 +10,11 @@ A lightweight, modern GNOME Shell extension to monitor your stock, ETF, and inve
 - 🎨 **Customizable Display**: Customize currency symbols, refresh intervals, and toggle individual display metrics (total value, daily change, percentage change).
 - 🚀 **Modern GNOME Shell Compatibility**: Built for GNOME Shell 45, 46, 47, and 48 using ES Modules.
 
+**Screenshot**
+
+<img width="807" height="535" alt="image" src="https://github.com/user-attachments/assets/9eaa60ab-d64c-42f5-9e2a-1a251044dc03" />
+
+
 ## Installation
 
 ### From GNOME Extensions (EGO)
