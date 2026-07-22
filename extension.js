@@ -46,12 +46,16 @@ export default class FinanceTrackerExtension extends Extension {
         this._cancellable = new Gio.Cancellable();
         this._httpSession = new Soup.Session();
         this._timeoutId = null;
+        this._retryTimeoutId = null;
         this._configMonitor = null;
         this._configMonitorSignalId = null;
+        this._networkMonitor = null;
+        this._networkSignalId = null;
         this._config = null;
         this._assetsData = {}; // Cache to store fetched data
         this._isRefreshing = false;
 
+        this._setupNetworkMonitor();
         this._loadConfig();
         this._setupConfigMonitor();
     }
@@ -60,6 +64,11 @@ export default class FinanceTrackerExtension extends Extension {
         if (this._timeoutId) {
             GLib.source_remove(this._timeoutId);
             this._timeoutId = null;
+        }
+
+        if (this._retryTimeoutId) {
+            GLib.source_remove(this._retryTimeoutId);
+            this._retryTimeoutId = null;
         }
 
         if (this._cancellable) {
@@ -74,6 +83,14 @@ export default class FinanceTrackerExtension extends Extension {
             }
             this._configMonitor.cancel();
             this._configMonitor = null;
+        }
+
+        if (this._networkMonitor) {
+            if (this._networkSignalId) {
+                this._networkMonitor.disconnect(this._networkSignalId);
+                this._networkSignalId = null;
+            }
+            this._networkMonitor = null;
         }
 
         if (this._label) {
@@ -94,6 +111,19 @@ export default class FinanceTrackerExtension extends Extension {
         this._config = null;
         this._assetsData = {};
         this._isRefreshing = false;
+    }
+
+    _setupNetworkMonitor() {
+        try {
+            this._networkMonitor = Gio.NetworkMonitor.get_default();
+            this._networkSignalId = this._networkMonitor.connect('network-changed', (monitor, networkAvailable) => {
+                if (networkAvailable && !this._isRefreshing) {
+                    this._refreshData();
+                }
+            });
+        } catch (e) {
+            this._logError('Failed to setup network monitor', e);
+        }
     }
 
     _logError(message, error) {
@@ -250,6 +280,9 @@ export default class FinanceTrackerExtension extends Extension {
 
             if (this._indicator && this._cancellable && !this._cancellable.is_cancelled()) {
                 this._updateUI(totalValue, totalInvested, totalDayChange, fetchSuccess);
+                if (!fetchSuccess) {
+                    this._scheduleRetry(15);
+                }
             }
         } catch (err) {
             this._logError('Critical error in _refreshData loop', err);
@@ -257,9 +290,24 @@ export default class FinanceTrackerExtension extends Extension {
                 this._label.style = null;
                 this._label.set_text('Error');
             }
+            this._scheduleRetry(15);
         } finally {
             this._isRefreshing = false;
         }
+    }
+
+    _scheduleRetry(seconds = 15) {
+        if (this._retryTimeoutId) {
+            GLib.source_remove(this._retryTimeoutId);
+            this._retryTimeoutId = null;
+        }
+        this._retryTimeoutId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, seconds, () => {
+            this._retryTimeoutId = null;
+            if (!this._isRefreshing) {
+                this._refreshData();
+            }
+            return GLib.SOURCE_REMOVE;
+        });
     }
 
     _fetchAssetData(symbol) {
