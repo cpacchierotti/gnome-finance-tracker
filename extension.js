@@ -52,7 +52,6 @@ export default class FinanceTrackerExtension extends Extension {
         this._assetsData = {}; // Cache to store fetched data
         this._isRefreshing = false;
 
-        this._ensureConfigDir();
         this._loadConfig();
         this._setupConfigMonitor();
     }
@@ -77,6 +76,11 @@ export default class FinanceTrackerExtension extends Extension {
             this._configMonitor = null;
         }
 
+        if (this._label) {
+            this._label.destroy();
+            this._label = null;
+        }
+
         if (this._indicator) {
             this._indicator.destroy();
             this._indicator = null;
@@ -87,51 +91,83 @@ export default class FinanceTrackerExtension extends Extension {
             this._httpSession = null;
         }
 
-        this._label = null;
         this._config = null;
         this._assetsData = {};
         this._isRefreshing = false;
     }
 
-    _ensureConfigDir() {
-        try {
-            let dir = Gio.File.new_for_path(CONFIG_DIR);
-            if (!dir.query_exists(null)) {
-                dir.make_directory_with_parents(null);
-            }
-
-            let file = Gio.File.new_for_path(CONFIG_FILE);
-            if (!file.query_exists(null)) {
-                let contentString = JSON.stringify(DEFAULT_CONFIG, null, 2);
-                GLib.file_set_contents(CONFIG_FILE, contentString);
-            }
-        } catch (e) {
-            console.error(`[Finance Tracker] Failed in _ensureConfigDir: ${e.message}`);
+    _logError(message, error) {
+        if (error && error.matches && error.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED)) {
+            return;
         }
+        console.error(`[Finance Tracker] ${message}${error ? `: ${error.message}` : ''}`);
     }
 
-    _loadConfig() {
+    async _loadConfig() {
         let file = Gio.File.new_for_path(CONFIG_FILE);
+        let dir = Gio.File.new_for_path(CONFIG_DIR);
+
         try {
-            let [success, contents] = file.load_contents(null);
-            if (success) {
-                let decoder = new TextDecoder('utf-8');
-                let jsonString = decoder.decode(contents);
-                let parsed = JSON.parse(jsonString);
-                if (parsed && typeof parsed === 'object') {
-                    this._config = parsed;
-                }
+            let contents = await new Promise((resolve, reject) => {
+                file.load_contents_async(this._cancellable, (obj, res) => {
+                    try {
+                        let [success, bytes] = obj.load_contents_finish(res);
+                        if (success) resolve(bytes);
+                        else reject(new Error('Failed to load config file'));
+                    } catch (e) {
+                        reject(e);
+                    }
+                });
+            });
+
+            let decoder = new TextDecoder('utf-8');
+            let parsed = JSON.parse(decoder.decode(contents));
+            if (parsed && typeof parsed === 'object') {
+                this._config = parsed;
             }
         } catch (e) {
-            console.error(`[Finance Tracker] Failed to load config: ${e.message}`);
-            if (!this._config) {
-                this._config = DEFAULT_CONFIG;
+            if (e && e.matches && e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.NOT_FOUND)) {
+                try {
+                    await new Promise((resolve) => {
+                        dir.make_directory_async(GLib.PRIORITY_DEFAULT, this._cancellable, (obj, res) => {
+                            try { obj.make_directory_finish(res); } catch (_) {}
+                            resolve();
+                        });
+                    });
+
+                    let jsonString = JSON.stringify(DEFAULT_CONFIG, null, 2);
+                    let bytes = new TextEncoder().encode(jsonString);
+
+                    await new Promise((resolve, reject) => {
+                        file.replace_contents_async(
+                            bytes,
+                            null,
+                            false,
+                            Gio.FileCreateFlags.NONE,
+                            this._cancellable,
+                            (obj, res) => {
+                                try {
+                                    obj.replace_contents_finish(res);
+                                    resolve();
+                                } catch (err) {
+                                    reject(err);
+                                }
+                            }
+                        );
+                    });
+
+                    this._config = DEFAULT_CONFIG;
+                } catch (createErr) {
+                    this._logError('Failed to create default config', createErr);
+                    if (!this._config) this._config = DEFAULT_CONFIG;
+                }
+            } else {
+                this._logError('Failed to load config', e);
+                if (!this._config) this._config = DEFAULT_CONFIG;
             }
         }
 
-        this._refreshData().catch(e => {
-            console.error(`[Finance Tracker] Uncaught error in _refreshData: ${e.message}`);
-        });
+        await this._refreshData();
         this._scheduleUpdate();
     }
 
@@ -157,9 +193,7 @@ export default class FinanceTrackerExtension extends Extension {
             : 300;
         
         this._timeoutId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, interval, () => {
-            this._refreshData().catch(e => {
-                console.error(`[Finance Tracker] Uncaught error in scheduled _refreshData: ${e.message}`);
-            });
+            this._refreshData();
             return GLib.SOURCE_CONTINUE;
         });
     }
@@ -210,7 +244,6 @@ export default class FinanceTrackerExtension extends Extension {
                         fetchSuccess = false;
                     }
                 } catch (e) {
-                    console.error(`[Finance Tracker] Error fetching ${symbol}: ${e.message}\n${e.stack}`);
                     fetchSuccess = false;
                 }
             }
@@ -219,7 +252,7 @@ export default class FinanceTrackerExtension extends Extension {
                 this._updateUI(totalValue, totalInvested, totalDayChange, fetchSuccess);
             }
         } catch (err) {
-            console.error(`[Finance Tracker] Critical error in _refreshData loop: ${err.message}\n${err.stack}`);
+            this._logError('Critical error in _refreshData loop', err);
             if (this._label) {
                 this._label.style = null;
                 this._label.set_text('Error');
@@ -497,8 +530,7 @@ export default class FinanceTrackerExtension extends Extension {
                 }
             }
         } catch (e) {
-            console.error(`[Finance Tracker] Error in _updateUI: ${e.message}\n${e.stack}`);
+            this._logError('Error in _updateUI', e);
         }
     }
 }
-
