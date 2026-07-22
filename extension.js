@@ -222,7 +222,7 @@ export default class FinanceTrackerExtension extends Extension {
 
         try {
             for (let asset of this._config.assets) {
-                if (!this._indicator) break;
+                if (!this._indicator || !this._cancellable || this._cancellable.is_cancelled()) break;
                 if (!asset || typeof asset.symbol !== 'string' || !asset.symbol.trim()) continue;
 
                 const symbol = asset.symbol.trim();
@@ -248,7 +248,7 @@ export default class FinanceTrackerExtension extends Extension {
                 }
             }
 
-            if (this._indicator) {
+            if (this._indicator && this._cancellable && !this._cancellable.is_cancelled()) {
                 this._updateUI(totalValue, totalInvested, totalDayChange, fetchSuccess);
             }
         } catch (err) {
